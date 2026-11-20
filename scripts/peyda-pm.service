@@ -1,0 +1,20 @@
+[Unit]
+Description=Peyda PM Bot
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+StateDirectory=peyda-pm
+StateDirectoryMode=0700
+WorkingDirectory=%h/Projects/peyda_pm_bot
+ExecStart=%h/Projects/peyda_pm_bot/.venv/bin/python -m peyda_pm_bot --serve --database %S/peyda-pm/peyda.db
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target

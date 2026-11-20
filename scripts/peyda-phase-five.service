@@ -1,0 +1,18 @@
+[Unit]
+Description=Peyda PM Bot offline phase five rehearsal
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+StateDirectory=peyda-pm
+StateDirectoryMode=0700
+WorkingDirectory=%h/Projects/peyda_pm_bot
+ExecStart=%h/Projects/peyda_pm_bot/.venv/bin/python -m peyda_pm_bot --phase-five --database %S/peyda-pm/offline.db --duration 30
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=default.target

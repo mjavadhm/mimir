@@ -1,0 +1,17 @@
+.venv/
+.tools/
+.runtime/
+.env
+*.db
+*.db-*
+*.sqlite*
+*.lockfile
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+logs/
+
+*.agent-process.json
