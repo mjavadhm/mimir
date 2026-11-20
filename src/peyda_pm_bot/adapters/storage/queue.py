@@ -1,10 +1,20 @@
 """Queue SQL, always executed inside the caller's short unit of work."""
 
+import time
+
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.sqlite import insert as upsert
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from peyda_pm_bot.adapters.storage.schema import agent_state, job_messages, jobs, outbox, versions
+from peyda_pm_bot.adapters.storage.schema import (
+    CARD_RETIRE,
+    agent_state,
+    job_messages,
+    jobs,
+    outbox,
+    versions,
+)
 from peyda_pm_bot.adapters.storage.store import message_codec
 from peyda_pm_bot.domain.agent.models import (
     AgentRequest,
@@ -14,7 +24,7 @@ from peyda_pm_bot.domain.agent.models import (
     SetReaction,
 )
 from peyda_pm_bot.domain.agent.outputs import encode_result, validate_actions
-from peyda_pm_bot.domain.conversations.events import IncomingUpdate
+from peyda_pm_bot.domain.conversations.events import IncomingUpdate, MessageEvent
 
 
 class SqlQueue:
@@ -349,20 +359,118 @@ class SqlQueue:
     async def turbo_applied(self, enabled: bool) -> None:
         await self.connection.execute(update(agent_state).values(turbo_effective=enabled))
 
-    async def card(self, text: str, now: float) -> None:
-        queued = await self.connection.scalar(
-            select(func.count()).select_from(jobs).where(jobs.c.status == "pending")
-        )
-        text = f"{text} | صف: {queued}"
-        state = (await self.connection.execute(select(agent_state))).mappings().one()
-        if state["card_text"] == text or now - state["card_at"] < 3:
+    async def progress(self, request: AgentRequest, text: str, *, finished: bool = False) -> None:
+        if finished:
+            await self.finish_card()
             return
+        if not await self.wanted(request):
+            return
+        anchor = next(
+            (item.message for item in reversed(request.messages) if item.message is not None),
+            None,
+        )
+        await self.card(text, time.time(), anchor=anchor)
+
+    async def card(
+        self,
+        text: str,
+        now: float,
+        *,
+        fresh: bool = False,
+        anchor: MessageEvent | None = None,
+    ) -> None:
+        state = (await self.connection.execute(select(agent_state))).mappings().one()
+        if not fresh and (state["card_text"] == text or now - state["card_at"] < 3):
+            return
+        existing = await self._latest_card()
         # An unknown card creation must never cause duplicate replacement cards.
-        existing = (
+        if (
+            not fresh
+            and existing
+            and existing["status"] == "failed"
+            and existing["target_id"] is None
+            and existing["operation"] == "message"
+        ):
+            return
+        if not fresh and existing and existing["status"] in {"sending", "unknown"}:
+            return
+        message = anchor or await self._latest_message()
+        if message is None:
+            return
+        if fresh:
+            # Drop edits still aimed at the previous card before opening a new one.
+            await self.connection.execute(
+                update(outbox)
+                .where(
+                    outbox.c.purpose == "card",
+                    outbox.c.operation == "message",
+                    outbox.c.status == "pending",
+                )
+                .values(status="failed")
+            )
+            await self.connection.execute(
+                update(agent_state).values(card_id=None, card_text=text, card_at=now)
+            )
+            await self._insert_card(text, now, message, None)
+            return
+        if existing and existing["status"] == "pending" and existing["operation"] == "message":
+            await self.connection.execute(
+                update(outbox).where(outbox.c.id == existing["id"]).values(text=text)
+            )
+        else:
+            await self._insert_card(text, now, message, state["card_id"])
+        await self.connection.execute(update(agent_state).values(card_text=text, card_at=now))
+
+    async def finish_card(self) -> None:
+        """Remove the turn's status message once its answer is durable."""
+        state = (await self.connection.execute(select(agent_state))).mappings().one()
+        existing = await self._latest_card()
+        await self.connection.execute(
+            update(outbox)
+            .where(
+                outbox.c.purpose == "card",
+                outbox.c.operation == "message",
+                outbox.c.status == "pending",
+            )
+            .values(status="failed")
+        )
+        if (
+            existing is not None
+            and existing["operation"] == "message"
+            and existing["status"] in {"sending", "unknown"}
+            and existing["target_id"] is None
+        ):
+            await self.connection.execute(update(agent_state).values(card_text=CARD_RETIRE))
+            return
+        # The previous single card may be an old topic message. Never delete that.
+        if state["card_id"] is not None and not str(state["card_text"]).startswith("**"):
+            await self.connection.execute(
+                update(agent_state).values(card_id=None, card_text="", card_at=0)
+            )
+            return
+        if state["card_id"] is not None and existing is not None:
+            await self.connection.execute(
+                insert(outbox).values(
+                    delivery_key=f"card-delete:{state['card_id']}:{existing['id']}",
+                    purpose="card",
+                    operation="delete",
+                    target_id=state["card_id"],
+                    chat_id=existing["chat_id"],
+                    topic_id=existing["topic_id"],
+                    text="",
+                    status="pending",
+                )
+            )
+        await self.connection.execute(
+            update(agent_state).values(card_id=None, card_text="", card_at=0)
+        )
+
+    async def _latest_card(self) -> RowMapping | None:
+        return (
             (
                 await self.connection.execute(
                     select(outbox)
-                    .where(outbox.c.purpose == "card")
+                    .where(outbox.c.purpose == "card", outbox.c.operation == "message")
                     .order_by(outbox.c.id.desc())
                     .limit(1)
                 )
@@ -370,33 +478,30 @@ class SqlQueue:
             .mappings()
             .first()
         )
-        if existing and existing["status"] == "failed" and existing["target_id"] is None:
-            return
-        if existing and existing["status"] in {"sending", "unknown"}:
-            return
+
+    async def _latest_message(self) -> MessageEvent | None:
         destination = (
             await self.connection.execute(
                 select(versions.c.payload).order_by(versions.c.update_id.desc()).limit(1)
             )
         ).scalar()
         if destination is None:
-            return
-        message = message_codec.validate_json(destination)
-        if existing and existing["status"] == "pending":
-            await self.connection.execute(
-                update(outbox).where(outbox.c.id == existing["id"]).values(text=text)
+            return None
+        return message_codec.validate_json(destination)
+
+    async def _insert_card(
+        self, text: str, now: float, message: MessageEvent, target_id: int | None
+    ) -> None:
+        await self.connection.execute(
+            insert(outbox).values(
+                delivery_key=f"card:{now}:{target_id or 'new'}",
+                purpose="card",
+                operation="message",
+                target_id=target_id,
+                chat_id=message.chat_id,
+                topic_id=message.topic_id,
+                reply_to_id=None if target_id is not None else message.message_id,
+                text=text,
+                status="pending",
             )
-        else:
-            await self.connection.execute(
-                insert(outbox).values(
-                    delivery_key=f"card:{now}",
-                    purpose="card",
-                    target_id=state["card_id"],
-                    chat_id=message.chat_id,
-                    topic_id=message.topic_id,
-                    reply_to_id=message.message_id,
-                    text=text,
-                    status="pending",
-                )
-            )
-        await self.connection.execute(update(agent_state).values(card_text=text, card_at=now))
+        )

@@ -94,7 +94,7 @@
 
 ## تطبیق فاز دو
 
-کارت وضعیت با `bot.edit_message_text(chat_id=..., message_id=..., text=...)` و پاسخ فرمان‌های محلی با `send_message` ارسال می‌شوند. خطای «message is not modified» برای ویرایش همان متن موفقیت محسوب می‌شود. [مستندات رسمی editMessageText](https://core.telegram.org/bots/api#editmessagetext).
+کارت وضعیت هر نوبت ابتدا با `send_rich_message` فرستاده می‌شود و بعد با `bot.edit_message_text(chat_id=..., message_id=..., rich_message=InputRichMessage(...))` ویرایش می‌شود. در بستهٔ نصب‌شدهٔ aiogram 3.32.0 پارامتر `rich_message` روی `edit_message_text` وجود دارد و به `editMessageText` نگاشت می‌شود. اگر ویرایش rich رد قطعی شود، همان متن یک بار با `text` ویرایش می‌شود. خطای «message is not modified» موفقیت است. پس از پاسخ نهایی، `bot.delete_message(chat_id, message_id)` همان پیام وضعیت را حذف می‌کند؛ نبودن پیام یا خارج‌بودن از پنجرهٔ حذف، تکرار نمی‌شود. [editMessageText](https://core.telegram.org/bots/api#editmessagetext) · [deleteMessage](https://core.telegram.org/bots/api#deletemessage). پیش‌نویس `sendRichMessageDraft` همچنان مخصوص چت خصوصی است و در تاپیک گروه استفاده نمی‌شود.
 
 از ۲۰۲۶-۱۱-۱۸، پاسخ نهایی ایجنت در تاپیک forum با `bot.send_rich_message` به همراه `message_thread_id`، `reply_parameters` و `InputRichMessage(markdown=..., is_rtl=...)` ارسال می‌شود. امضا و فیلدها در نسخهٔ نصب‌شدهٔ aiogram 3.32.0 بررسی شدند. در رد قطعی درخواست rich، همان محتوا یک بار با `send_message` فرستاده می‌شود. خطای شبکه نتیجهٔ نامعلوم دارد و به ارسال جایگزین منجر نمی‌شود. [روش رسمی sendRichMessage](https://core.telegram.org/bots/api#sendrichmessage) · [InputRichMessage](https://core.telegram.org/bots/api#inputrichmessage).
 

@@ -64,6 +64,20 @@ class AiogramTransport:
 
     async def send(self, delivery: Delivery) -> int:
         try:
+            if delivery.operation == "delete":
+                if delivery.target_id is None:
+                    raise PermanentFailure("Missing delete target")
+                try:
+                    await self.bot.delete_message(
+                        chat_id=delivery.chat_id, message_id=delivery.target_id
+                    )
+                except TelegramBadRequest as error:
+                    # Already gone, or outside Telegram's delete window. Do not retry.
+                    if "not found" not in error.message.lower() and "can't be deleted" not in (
+                        error.message.lower()
+                    ):
+                        raise
+                return delivery.target_id
             if delivery.operation == "reaction":
                 if delivery.target_id is None:
                     raise PermanentFailure("Missing reaction target")
@@ -81,6 +95,21 @@ class AiogramTransport:
             if delivery.operation != "message":
                 raise PermanentFailure("Unsupported delivery operation")
             if delivery.target_id is not None:
+                if delivery.rich_text:
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=delivery.chat_id,
+                            message_id=delivery.target_id,
+                            rich_message=InputRichMessage(
+                                markdown=delivery.text,
+                                is_rtl=first_strong_is_rtl(delivery.text),
+                            ),
+                        )
+                    except TelegramBadRequest as error:
+                        if "message is not modified" in error.message.lower():
+                            return delivery.target_id
+                    else:
+                        return delivery.target_id
                 await self.bot.edit_message_text(
                     chat_id=delivery.chat_id, message_id=delivery.target_id, text=delivery.text
                 )

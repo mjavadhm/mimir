@@ -13,6 +13,28 @@ from peyda_pm_bot.domain.memory.models import MemoryPolicy
 
 logger = logging.getLogger(__name__)
 
+STAGE_LABELS = {
+    "thinking": "در حال فکر کردن",
+    "writing": "در حال نوشتن",
+    "reading": "در حال خواندن",
+    "searching": "در حال جست‌وجو",
+    "working": "در حال کار",
+    "reviewing": "در حال جمع‌بندی",
+    "tool_failed": "ابزار به مشکل خورد",
+    "github_read": "در حال خواندن گیت‌هاب",
+    "github_prepare": "در حال آماده‌کردن گیت‌هاب",
+    "memory": "در حال خواندن حافظه",
+    "create_file": "در حال ساخت فایل",
+}
+
+
+def presence(stage: str, elapsed: int) -> str:
+    """One short rich line. Internal thought and partial answers stay private."""
+    label = STAGE_LABELS.get(stage, "در حال بررسی")
+    if elapsed <= 0:
+        return f"**{label}…**"
+    return f"**{label}…** · {elapsed} ثانیه"
+
 
 class AgentWorker:
     def __init__(
@@ -91,11 +113,13 @@ class AgentWorker:
                     memory_policy_version=self.memory_policy.version,
                 )
         if request is None:
-            async with self.uow() as unit:
-                text = "نیازمند رسیدگی" if state.blocked else "آماده"
-                await unit.queue.card(text, time.time())
             return False
         result: AgentResult | None = None
+        anchor = next(
+            (item.message for item in reversed(request.messages) if item.message is not None),
+            None,
+        )
+        started = time.monotonic()
 
         async def turn() -> None:
             nonlocal result
@@ -104,19 +128,29 @@ class AgentWorker:
                     if result is not None:
                         raise ValueError("Duplicate terminal result")
                     result = event
-                elif event.kind == "activity":
-                    async with self.uow() as unit:
-                        await unit.queue.card("در حال خواندن اطلاعات مجاز", time.time())
 
         task = asyncio.create_task(turn())
         status = "unknown"
         try:
             async with self.uow() as unit:
-                await unit.queue.card("در حال بررسی", time.time())
+                await unit.queue.card(
+                    presence(self.agent.progress().stage, 0),
+                    time.time(),
+                    fresh=True,
+                    anchor=anchor,
+                )
             async with asyncio.timeout(self.timeout):
                 while not task.done():
                     async with self.uow() as unit:
                         wanted = await unit.queue.wanted(request)
+                        if wanted:
+                            await unit.queue.card(
+                                presence(
+                                    self.agent.progress().stage,
+                                    int(time.monotonic() - started),
+                                ),
+                                time.time(),
+                            )
                     if not wanted:
                         await self._stop(task)
                         return True
@@ -130,6 +164,7 @@ class AgentWorker:
                     await unit.actions.publish(request)
                     await unit.queue.complete(request, result)
                     await unit.outgoing.memory_notice(request, changed)
+                await unit.queue.finish_card()
             status = "succeeded"
         except asyncio.CancelledError:
             await self._stop(task)
@@ -148,6 +183,7 @@ class AgentWorker:
             if status != "succeeded":
                 async with self.uow() as unit:
                     await unit.queue.fail(request, status)
+                    await unit.queue.finish_card()
         return True
 
     async def _stop(self, task: asyncio.Task[None]) -> None:

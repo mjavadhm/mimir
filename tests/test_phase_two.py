@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 
 from peyda_pm_bot.adapters.antigravity.fake import FakeAgent
 from peyda_pm_bot.adapters.antigravity.permissions import ReadPolicy
-from peyda_pm_bot.adapters.storage.schema import jobs, outbox
+from peyda_pm_bot.adapters.storage.schema import agent_state, jobs, outbox
 from peyda_pm_bot.adapters.telegram.fake import FakeTransport
 from peyda_pm_bot.application.agent.worker import AgentWorker
 from peyda_pm_bot.application.conversations.service import Conversations
@@ -377,6 +377,55 @@ def _process_active(stat):
         return stat.read_text().split(") ", 1)[1][0] != "Z"
     except FileNotFoundError:
         return False
+
+
+async def test_each_turn_opens_a_new_status_reply(database, conversations):
+    from sqlalchemy import update
+
+    await batch(database, conversations, [event(text="question")])
+    async with database.unit() as unit:
+        await unit.connection.execute(
+            update(agent_state).values(card_id=6, card_text="آماده | صف: 0", card_at=1)
+        )
+    await AgentWorker(database.unit, FakeAgent()).run_one()
+    async with database.unit() as unit:
+        rows = (
+            (await unit.connection.execute(select(outbox).order_by(outbox.c.id))).mappings().all()
+        )
+        state = (await unit.connection.execute(select(agent_state))).mappings().one()
+    created = [row for row in rows if row["purpose"] == "card" and row["operation"] == "message"]
+    assert created[0]["reply_to_id"] == 100
+    assert created[0]["target_id"] is None
+    assert created[0]["text"].startswith("**در حال")
+    assert created[0]["status"] == "failed"
+    assert all(row["target_id"] != 6 for row in rows)
+    assert state["card_id"] is None
+
+
+async def test_sent_status_is_deleted_and_old_card_is_kept(database, conversations):
+    from sqlalchemy import update
+
+    from peyda_pm_bot.domain.conversations.events import MessageEvent
+
+    await batch(database, conversations, [event(text="question")])
+    anchor = event().message
+    assert isinstance(anchor, MessageEvent)
+    async with database.unit() as unit:
+        await unit.connection.execute(
+            update(agent_state).values(card_id=6, card_text="آماده | صف: 0", card_at=1)
+        )
+        await unit.queue.card("**در حال فکر کردن…**", 100, fresh=True, anchor=anchor)
+    transport = FakeTransport()
+    assert await Sender(database.unit, transport).send_one()
+    assert transport.sent[0].rich_text
+    assert transport.sent[0].reply_to_id == 100
+    assert transport.sent[0].target_id is None
+    async with database.unit() as unit:
+        await unit.queue.finish_card()
+    assert await Sender(database.unit, transport).send_one()
+    assert transport.sent[1].operation == "delete"
+    assert transport.sent[1].target_id == 1
+    assert transport.sent[1].target_id != 6
 
 
 async def test_failed_card_creation_does_not_loop(database, conversations):

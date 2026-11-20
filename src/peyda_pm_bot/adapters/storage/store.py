@@ -8,6 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from peyda_pm_bot.adapters.storage.schema import (
+    CARD_RETIRE,
     action_versions,
     agent_state,
     checkpoint,
@@ -154,7 +155,11 @@ class SqlStore:
             row["target_id"],
             row["operation"],
             row["reaction_emoji"],
-            rich_text=row["purpose"] == "reply" and row["job_id"] is not None,
+            rich_text=row["operation"] == "message"
+            and (
+                row["purpose"] == "card"
+                or (row["purpose"] == "reply" and row["job_id"] is not None)
+            ),
         )
 
     async def finish_delivery(
@@ -164,12 +169,50 @@ class SqlStore:
         external_id: int | None,
         due: datetime,
     ) -> None:
-        purpose = await self.connection.scalar(
-            select(outbox.c.purpose).where(outbox.c.id == delivery_id)
+        row = (
+            (
+                await self.connection.execute(
+                    select(
+                        outbox.c.purpose,
+                        outbox.c.operation,
+                        outbox.c.target_id,
+                        outbox.c.chat_id,
+                        outbox.c.topic_id,
+                    ).where(outbox.c.id == delivery_id)
+                )
+            )
+            .mappings()
+            .one()
         )
-        if purpose == "card" and status == "sent":
+        state = (await self.connection.execute(select(agent_state))).mappings().one()
+        created = (
+            row["purpose"] == "card" and row["operation"] == "message" and row["target_id"] is None
+        )
+        retire = created and status == "sent" and state["card_text"] == CARD_RETIRE
+        if retire and external_id is not None:
+            await self.connection.execute(
+                insert(outbox).values(
+                    delivery_key=f"card-delete:{external_id}:{delivery_id}",
+                    purpose="card",
+                    operation="delete",
+                    target_id=external_id,
+                    chat_id=row["chat_id"],
+                    topic_id=row["topic_id"],
+                    text="",
+                    status="pending",
+                )
+            )
+            await self.connection.execute(
+                update(agent_state).values(card_id=None, card_text="", card_at=0)
+            )
+        elif (
+            row["purpose"] == "card"
+            and row["operation"] == "message"
+            and status == "sent"
+            and (row["target_id"] is None or row["target_id"] == state["card_id"])
+        ):
             await self.connection.execute(update(agent_state).values(card_id=external_id))
-        if purpose == "card" and status == "failed":
+        elif created and status == "failed" and state["card_id"] is None:
             await self.connection.execute(update(agent_state).values(card_id=None, card_text=""))
         await self.connection.execute(
             update(outbox)

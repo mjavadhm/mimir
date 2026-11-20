@@ -90,6 +90,10 @@ agent_state = sa.Table(
     sa.Column("card_at", sa.Float, nullable=False, server_default="0"),
 )
 
+# Stored only in agent_state.card_text. A creation that finishes after the turn
+# must be deleted instead of becoming the next edit target.
+CARD_RETIRE = "\x00retire"
+
 memory_turns = sa.Table(
     "memory_turns",
     metadata,

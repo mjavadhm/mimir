@@ -227,6 +227,48 @@ async def test_rich_reply_only_falls_back_for_explicit_rejection(monkeypatch, er
         await transport.close()
 
 
+async def test_status_edit_uses_rich_message_and_plain_fallback(monkeypatch):
+    bot = Bot("123456:FAKE_OFFLINE_TOKEN")
+    request = SendRichMessage(
+        chat_id=-1001, rich_message=InputRichMessage(markdown="**در حال فکر کردن…**")
+    )
+    delivery = Delivery(1, -1001, 42, 100, "**در حال فکر کردن…**", 1, 8, rich_text=True)
+    success = type("Response", (), {"message_id": 8})()
+    edit = AsyncMock(return_value=success)
+    monkeypatch.setattr(bot, "edit_message_text", edit)
+    transport = AiogramTransport(bot)
+    try:
+        assert await transport.send(delivery) == 8
+        assert edit.await_args.kwargs["rich_message"].markdown == "**در حال فکر کردن…**"
+        assert edit.await_args.kwargs["rich_message"].is_rtl
+        assert edit.await_args.kwargs.get("text") is None
+        edit.side_effect = [
+            TelegramBadRequest(method=request, message="RICH_MESSAGE_INVALID"),
+            success,
+        ]
+        assert await transport.send(delivery) == 8
+        assert edit.await_args_list[-1].kwargs["text"] == "**در حال فکر کردن…**"
+    finally:
+        await transport.close()
+
+
+async def test_delete_of_missing_status_is_not_retried(monkeypatch):
+    from aiogram.methods import DeleteMessage
+
+    bot = Bot("123456:FAKE_OFFLINE_TOKEN")
+    missing = AsyncMock(
+        side_effect=TelegramBadRequest(
+            method=DeleteMessage(chat_id=-1001, message_id=8), message="message to delete not found"
+        )
+    )
+    monkeypatch.setattr(bot, "delete_message", missing)
+    transport = AiogramTransport(bot)
+    try:
+        assert await transport.send(Delivery(1, -1001, 42, None, "", 1, 8, "delete")) == 8
+    finally:
+        await transport.close()
+
+
 async def test_transport_replies_optional_and_reactions(monkeypatch):
     bot = Bot("123456:FAKE_OFFLINE_TOKEN")
     send = AsyncMock(return_value=type("Response", (), {"message_id": 9})())
