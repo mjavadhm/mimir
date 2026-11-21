@@ -1,4 +1,0 @@
-#!/bin/sh
-# Sign in using the regular CLI profile shared by the terminal and Telegram bridge.
-set -eu
-exec agy-cli acp --login

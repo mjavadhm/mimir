@@ -1,14 +1,18 @@
 # مرجع GitHub فاز چهار
 
-تاریخ بررسی: ۲۰۲۶-۱۱-۱۸. این سند قرارداد پیاده‌سازی و تست آفلاین است، نه تأیید اتصال واقعی حساب.
+تاریخ مرجع API: ۲۰۲۶-۱۱-۱۸؛ بازنگری محدوده: ۲۰۲۶-۱۱-۲۱. این سند طراحی مقصد adapter فاز چهار است؛ در درخت فعلی adapter گیت‌هاب پیاده نشده و اتصال واقعی حساب تأیید نشده است. قراردادها پیش از پیاده‌سازی دوباره با مستندات رسمی و dependencyهای انتخاب‌شده تطبیق داده می‌شوند.
 
 ## نسخه و credential
 
-REST header انتخاب‌شده `X-GitHub-Api-Version: 2026-03-10` است؛ در [مرجع رسمی نسخه‌ها](https://docs.github.com/en/rest/about-the-rest-api/api-versions) پشتیبانی می‌شود. HTTP client از `Accept: application/vnd.github+json`، timeout سی ثانیه و توکن تنظیم‌شده در پردازش اصلی استفاده می‌کند. redirect خودکار غیرفعال است.
+REST header طرح مرجع `X-GitHub-Api-Version: 2026-03-10` است؛ پیش از پیاده‌سازی با [مرجع رسمی نسخه‌ها](https://docs.github.com/en/rest/about-the-rest-api/api-versions) تطبیق داده شود. HTTP client پیشنهادی از `Accept: application/vnd.github+json`، timeout سی ثانیه و توکن اختصاصی adapter در پردازش اصلی استفاده می‌کند؛ redirect خودکار غیرفعال خواهد بود.
 
-نسخه‌های خوانده‌شده از محیط و قفل پروژه: httpx **0.28.1**، MCP **1.30.0**، ACP **1.0.0**، uvicorn **0.54.0** و aiogram **3.32.0**. ادعای آخرین نسخه دائمی نیست؛ ارتقا نیازمند بررسی و تست دوباره است.
+در وابستگی‌های فعلی پروژه، کتابخانه‌های HTTP/ACP/MCP موردنیاز این adapter هنوز انتخاب و قفل نشده‌اند. نسخه‌های یک محیط آزمایشی مدرک dependency درخت فعلی نیستند. انتخاب آن‌ها هنگام تحویل مربوط انجام می‌شود؛ aiogram فعلی **3.32.0** است.
 
-روش credential این نسخه fine-grained PAT برای یک مخزن است؛ پیش از نخستین mutation، `GET /user` و login تنظیم‌شده تطبیق داده می‌شوند. برای Issues write، PR read و Contents read در فاز شش سطح دسترسی دقیق بررسی شود. پشتیبانی GitHub App installation authentication در این پیاده‌سازی ادعا نشده است.
+روش credential پیشنهادی ابزار بات fine-grained PAT برای یک مخزن است؛ پیش از نخستین mutation، هویت حساب و binding مخزن تطبیق داده می‌شوند. رفتار endpoint هویت و سطح Issues write، PR read و Contents read با نوع token انتخاب‌شده در فاز چهار بررسی شود. GitHub App installation authentication هنوز طراحی/پیاده نشده است.
+
+این سند فقط ابزارهای افزودهٔ گیت‌هاب بات را محدود می‌کند. shell، git، `gh` و احراز هویت معمول پروفایل Antigravity باقی می‌مانند؛ credential اختصاصی adapter به آن‌ها تزریق نمی‌شود. عملیات native زیر تضمین dedup، تراکنش یا reconciliation این adapter نیستند. ایجنت نباید نتیجهٔ مجهول را با رفتن به مسیر دیگر دوباره اجرا کند؛ نخست وضعیت واقعی را بررسی می‌کند.
+
+prepare و submit ابزار بات جدا هستند. submit تا پایان موفق همان نوبت staged است و پاسخ آن موفقیت ساخت ایشو نیست. نتیجهٔ executor یک رویداد پایدار در همان نشست می‌سازد؛ ایجنت در نوبت بعد می‌تواند لینک واقعی را با ابزار تلگرام بفرستد. ابزار تلگرام برخلاف submit گیت‌هاب در میانهٔ نوبت اجرا می‌شود و شکست آن، عملیات گیت‌هاب را تکرار نمی‌کند.
 
 ## نگاشت endpointها
 
@@ -34,6 +38,6 @@ REST header انتخاب‌شده `X-GitHub-Api-Version: 2026-03-10` است؛ د
 - تطبیق نتیجه unknown فقط خواندن است؛ marker حذف‌شده، پاسخ نامعتبر، چند تطبیق یا اسکن ناتمام خودکار resend ایجاد نمی‌کند.
 - موفقیت 2xx با حذف خاموش فیلدهای درخواستی، Partial result گزارش می‌شود؛ issue ایجادشده دوباره ساخته نمی‌شود.
 
-مبنای نرخ و رفتار REST: [راهنمای رسمی best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api). محدودیت رقابت GET/PATCH و نبود exactly-once در [راهنمای فاز چهار](PHASE_FOUR.md) توضیح داده شده است.
+مبنای نرخ و رفتار REST: [راهنمای رسمی best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api).
 
-MCP گیت‌هاب فقط روی loopback در همان پردازش مالک credential اجرا می‌شود. در ACP، `mcp_capabilities.http` باید اعلام شود؛ در غیر این صورت اتصال خطای مشخص می‌دهد و هیچ fallback با انتقال PAT به ایجنت انجام نمی‌شود. این قرارداد از SDK نصب‌شده بررسی و با peer آزمایشی تست شده؛ قابلیت واقعی CLI در فاز شش بررسی خواهد شد.
+در طراحی ابزار گیت‌هاب، credential در پردازش اصلی می‌ماند. transport افزوده باید علاوه بر binding پروژه و نوبت، احراز هویت داشته باشد؛ loopback به‌تنهایی کافی نیست. HTTP یا stdio و اعلان capability با نسخهٔ واقعی SDK/CLI در فاز دو تأیید می‌شوند. استثنای نسخه از نوشتهٔ قدیمی یا mock موفق به اجرای فعلی تعمیم داده نمی‌شود و fallback با انتقال PAT به ایجنت نداریم. تست API و حساب واقعی گیت‌هاب در فاز چهار انجام می‌شود.

@@ -1,4 +1,5 @@
 .venv/
+vendor/tele-agy-screen/node_modules/
 .tools/
 .runtime/
 .env

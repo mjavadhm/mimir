@@ -1,6 +1,0 @@
-from typing import Protocol
-
-
-class RateLimits(Protocol):
-    async def get(self) -> tuple[float, float]: ...
-    async def save(self, not_before: float, next_write: float) -> None: ...

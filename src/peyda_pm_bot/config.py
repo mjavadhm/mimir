@@ -1,90 +1,73 @@
-"""Validated local configuration; no I/O occurs on import."""
+"""Validated process settings. Constructing them does not read a dotenv file."""
 
-from datetime import time
+import os
 from pathlib import Path
-from typing import Annotated, Self
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from peyda_pm_bot.domain.conversations.models import Allowlist
 
-class TelegramSettings(BaseSettings):
-    """Credentials-only configuration for discovery before chat IDs are known."""
-
-    model_config = SettingsConfigDict(env_prefix="PEYDA_", env_file=".env", extra="ignore")
-
-    bot_token: SecretStr | None = None
+_REQUIRED = ("PEYDA_BOT_TOKEN", "PEYDA_GROUP_ID", "PEYDA_TOPIC_ID", "PEYDA_ADMIN_IDS")
 
 
-class Settings(TelegramSettings):
-    model_config = SettingsConfigDict(env_prefix="PEYDA_", env_file=".env", extra="forbid")
+class Settings(BaseModel):
+    model_config = ConfigDict(frozen=True)
 
-    project_id: str = Field(min_length=1)
-    group_id: int = Field(lt=0)
+    bot_token: str = Field(min_length=1)
+    group_id: int
     topic_id: int = Field(gt=0)
-    admin_ids: frozenset[Annotated[int, Field(gt=0)]] = Field(min_length=1)
+    admin_ids: frozenset[int] = Field(min_length=1)
     database_path: Path
-    max_send_attempts: int = Field(default=3, ge=1, le=10)
-    retry_base_seconds: float = Field(default=1, gt=0, le=60)
+    agy_cli_path: Path | None = None
 
-    batch_quiet_seconds: float = Field(default=4, gt=0, le=60)
-    batch_ceiling_seconds: float = Field(default=12, gt=0, le=300)
-    agent_timeout_seconds: float = Field(default=600, gt=0, le=3600)
-    agent_startup_seconds: float = Field(default=30, gt=0, le=300)
-    agent_cancel_seconds: float = Field(default=5, gt=0, le=60)
-
-    memory_policy_path: Path | None = None
-    antigravity_cli_path: Path = Path("agy-cli")
-    agent_workspace_path: Path | None = None
-    agent_conversation_id: str | None = Field(
-        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
-    )
-    agent_desktop_keyring: bool = False
-    agent_turbo: bool = True
-
-    github_repository: str | None = Field(
-        default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
-    )
-    github_token: SecretStr | None = None
-    github_bot_login: str | None = None
-    github_live_validated: bool = False
-    member_logins: dict[int, str] = Field(default_factory=dict)
-    status_labels: dict[str, str] = Field(
-        default_factory=lambda: {
-            state: f"pm:{state}"
-            for state in ("backlog", "ready", "in_progress", "in_review", "blocked", "done")
-        }
-    )
-    report_timezone: str = "Asia/Tehran"
-    report_at: time | None = None
-    reminder_at: time | None = None
-    github_sync_seconds: float = Field(default=900, ge=60, le=86400)
-    idle_work_hours: float = Field(default=72, gt=0, le=8760)
-
-    @field_validator("report_timezone")
+    @field_validator("group_id")
     @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as error:
-            raise ValueError("Expected an IANA time zone") from error
+    def group_is_set(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("group id must not be zero")
         return value
 
-    @field_validator("report_at", "reminder_at")
+    @field_validator("admin_ids")
     @classmethod
-    def validate_daily_time(cls, value: time | None) -> time | None:
-        if value is not None and (value.tzinfo is not None or value.second or value.microsecond):
-            raise ValueError("Expected a local time in HH:MM format")
+    def positive_admins(cls, value: frozenset[int]) -> frozenset[int]:
+        if any(item <= 0 for item in value):
+            raise ValueError("admin ids must be positive")
         return value
 
-    @model_validator(mode="after")
-    def validate_github_mapping(self) -> Self:
-        expected = {"backlog", "ready", "in_progress", "in_review", "blocked", "done"}
-        if (
-            set(self.status_labels) != expected
-            or len(set(self.status_labels.values())) != 6
-            or any(not label.strip() for label in self.status_labels.values())
-        ):
-            raise ValueError("Status labels must map six states to distinct nonempty names")
-        return self
+    def allowlist(self) -> Allowlist:
+        return Allowlist(group_id=self.group_id, topic_id=self.topic_id, admin_ids=self.admin_ids)
+
+
+def settings_from_environ(database_path: Path) -> Settings:
+    missing = [name for name in _REQUIRED if not os.environ.get(name)]
+    if missing:
+        raise ValueError("missing settings: " + ", ".join(missing))
+    try:
+        group_id = int(os.environ["PEYDA_GROUP_ID"])
+        topic_id = int(os.environ["PEYDA_TOPIC_ID"])
+    except ValueError as exc:
+        raise ValueError("PEYDA_GROUP_ID and PEYDA_TOPIC_ID must be integers") from exc
+    configured = os.environ.get("PEYDA_AGY_CLI")
+    candidate = Path(configured) if configured else Path.home() / ".local" / "bin" / "agy-cli"
+    agy_cli = candidate if candidate.is_file() else None
+    return Settings(
+        bot_token=os.environ["PEYDA_BOT_TOKEN"],
+        group_id=group_id,
+        topic_id=topic_id,
+        admin_ids=_admin_ids(os.environ["PEYDA_ADMIN_IDS"]),
+        database_path=database_path,
+        agy_cli_path=agy_cli,
+    )
+
+
+def _admin_ids(raw: str) -> frozenset[int]:
+    parts = [part.strip() for part in raw.strip().strip("[]").split(",") if part.strip()]
+    if not parts:
+        raise ValueError("PEYDA_ADMIN_IDS must list positive integers")
+    try:
+        values = [int(part) for part in parts]
+    except ValueError as exc:
+        raise ValueError("PEYDA_ADMIN_IDS must list positive integers") from exc
+    if any(value <= 0 for value in values):
+        raise ValueError("PEYDA_ADMIN_IDS must list positive integers")
+    return frozenset(values)
