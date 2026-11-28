@@ -1,6 +1,6 @@
-# Problems Peyda must solve
+# Problems Mimir must solve
 
-Peyda is a project-management assistant on Telegram for a three-person peer
+Mimir is a project-management assistant on Telegram for a three-person peer
 team. The bot is a member of the team's group (topic `pm`), reads what members
 write, joins discussions with knowledge of the code and the history of
 decisions, records decisions, turns them into issues, and follows the work

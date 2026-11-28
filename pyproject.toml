@@ -1,40 +1,32 @@
+[project]
+name = "mimir-pm-bot"
+version = "0.1.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "aiogram==3.32.0",
+    "alembic==1.20.1",
+    "pydantic>=2,<3",
+    "pyte>=0.8.2,<0.9",
+    "sqlalchemy>=2,<3",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[project]
-name = "peyda-pm-bot"
-version = "0.1.0"
-description = "Durable local Telegram project-management bot"
-requires-python = ">=3.12,<3.15"
-dependencies = [
-    "aiogram>=3.32,<4",
-    "sqlalchemy[asyncio]>=2.0,<2.1",
-    "aiosqlite>=0.21,<1",
-    "alembic>=1.17,<2",
-    "pydantic-settings>=2.12,<3",
-    "agent-client-protocol>=1.0.0",
-    "mcp>=1,<2",
-    "httpx>=0.28,<1",
-    "uvicorn>=0.30,<1",
-]
-
 [dependency-groups]
-dev = ["ruff>=0.14", "mypy>=1.18", "pytest>=9", "pytest-asyncio>=1.3"]
+dev = ["pytest>=9,<10", "ruff", "mypy"]
 
 [tool.ruff]
-target-version = "py312"
 line-length = 100
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "ASYNC"]
+select = ["E","F","I","UP","B","ASYNC"]
 [tool.mypy]
 strict = true
-plugins = ["pydantic.mypy"]
-python_version = "3.12"
-[tool.pydantic-mypy]
-init_typed = true
-init_forbid_extra = true
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"prompts" = "mimir_pm_bot/defaults/prompts"
+"config/mcp.toml" = "mimir_pm_bot/defaults/config/mcp.toml"

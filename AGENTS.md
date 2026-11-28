@@ -1,66 +1,142 @@
-# Peyda PM Bot development guide
+# Mimir PM Bot development guide
 
-Read `README.md` for product requirements and `docs/IMPLEMENTATION_PLAN.md` for delivery stages. Phases one through five have offline runnable implementations. Phase six adds the integrated `--serve` entry point. Record live evidence in `docs/LIVE_TESTING.md` and distinguish planned capabilities from verified results.
+## Current contract and state
 
-On 2026-11-18 the user explicitly brought installation, connections and real testing forward after phase four. Antigravity CLI installation, isolated authentication, real Telegram tests and GitHub connection checks are authorized. This supersedes the earlier deferral. Keep production rollout and PR review separate from this integration checkpoint.
+The owner's rebuild contract is [docs/REBUILD_PLAN.md](docs/REBUILD_PLAN.md).
+Read it before planning or implementing a change. The team's problems are
+recorded in [docs/PROBLEMS.md](docs/PROBLEMS.md).
 
-Read `docs/ARCHITECTURE.md` before planning or implementing a feature. It is the canonical contract for module ownership, public boundaries, transactions and the development workflow; keep the implementation plan consistent with it.
+On 2026-11-22 the owner requested removal of the previous implementation and
+confirmed the rebuild contract. The old source, tests, migrations, scripts,
+dependency manifests and CI configuration have been removed. Phase one of the rebuild is implemented and live-tested. Local credentials, runtime data, installed
+tools and Git history have been retained.
 
-Keep routine tests offline and isolated from local `.env` and process credentials. Live checks are explicit commands, never part of routine pytest or import. Do not treat mock success as proof of real compatibility. CLI binaries, auth profiles, local databases and credentials belong in ignored `.tools/`, `.runtime/` and `.env`; never replace the existing `agy` GUI launcher.
+The documents in `docs/legacy/` describe the removed implementation. Existing
+API references and the previous detailed PR-review proposal are background,
+not evidence that the rebuild implements or supports those capabilities.
+Do not carry old restrictions or completed-phase claims into the rebuild.
 
-The Telegram topic is a front end for the managed project's persistent Antigravity conversation. Live startup uses the regular `agy-cli` profile and launches ACP from the configured project root. Bind an existing conversation ID explicitly and fail startup if loading it fails. Per-process permission overrides apply to the bridge without writing to the user's CLI settings. This reopens a conversation rather than attaching to a running interactive terminal. Desktop-keyring access is a separate opt-in, and automatic review previously rejected enabling it without explicit authorization.
+## Product and agent behavior
 
-The user accepts the current Antigravity behavior for file reads. Additional read confinement is outside phase-six acceptance. The user allows the agent to create new files inside the managed project when the work calls for them. Treat creation as a distinct capability with an enforced project boundary, no overwrite, and a recorded result. Existing-file edits, deletion, and shell execution require separate authority.
+- Build a Telegram project-management assistant for three peers. Do not invent
+  a product-manager role. The team's group and its `pm` topic are the primary
+  interface.
+- Use one real Antigravity agent and one persistent conversation for the whole
+  managed project. Connect through ACP and reopen the explicitly configured
+  conversation with `session/load`; a loading failure must not silently create
+  a replacement. Users, topics and ordinary management tasks share this session.
+  In phase five, Mimir delegates PR analysis through a review tool that starts
+  a separate Antigravity session with a fixed prompt and PR-specific input.
+- Keep management turns sequential, including across process restarts. Receiving
+  input concurrently never authorizes a second active prompt.
+- Run `agy-cli` with its ordinary user-login profile, including DBus/keyring
+  access as required by that profile, and Turbo auto-accept. This is a terminal
+  agent, not an API-key model service. Never replace the existing `agy` GUI
+  launcher.
+- Do not add bot restrictions, approval gates or wrappers around the agent's
+  native file, terminal or Git tools, and do not restrict Turbo. The ACP client
+  must not advertise filesystem or terminal capabilities; Antigravity handles
+  these operations through its own native tools. Bot tools are additions.
+- The agent chooses whether to send messages, replies, reactions, files, any
+  combination, or nothing. A successful turn may be silent. Never automatically
+  publish ordinary session text to the group; posting requires an explicit
+  Telegram tool call.
+- Team confirmation and consensus rules are standing agent instructions. Do
+  not implement vote counting, sensitivity classification or social approval
+  gates. Technical validation of targets, turns, revisions and deduplication
+  remains mandatory for the bot's tools.
+- GitHub is the source of truth for issues and PRs. Local storage holds a
+  reconciled projection, conversation evidence and durable subject memory.
+- Deliver the management bot first. Add PR review in the second milestone
+  through the delegated review workflow in `docs/PR_REVIEW_PLAN.md`.
+
+## Telegram tools and queue
+
+- Provide separate tools to send a group/topic message, reply to a specific
+  message/version, set/change/remove reactions in stable order, and send a
+  readable file as a document. The contract's 50 MB note is informational,
+  never a bot-side refusal rule; report the actual service result.
+- Tool results describe what happened and what data is available. Validate
+  turn/generation, target binding, deduplication and message versions; do not
+  add social validation.
+- Persist incoming messages before advancing Telegram's offset. Preserve
+  speaker identity, edits, replies, topic links and the arrival timestamp.
+- Group nearby messages into a pile. Defaults are a four-second silence gap
+  and a sixty-second maximum wait from the first line, both read from settings.
+  A pile produces one prompt in the same persistent session.
+- Input arriving during an active turn is durably queued for the following
+  pile. Silence and reaction-only responses remain valid.
+- Measure real Antigravity prompt capacity before selecting the backlog cap.
+  Record an explicit overflow decision; never silently truncate or split input.
+- Store each outgoing attempt before network submission. Replaying the same
+  tool-call identity must not resend it; distinct deliberate sends are allowed.
+  Pending sends may outlive a successful turn. Record unknown outcomes and
+  reconcile them before retrying. Never blindly replay a send after a crash
+  between submission and result recording, or claim exactly-once delivery.
+- Persist Telegram RetryAfter rescheduling and chunk long text. Keep retries
+  bounded and distinguish definite rejection, retryable failure and unknown
+  outcome.
+- `/screen` belongs only in the technical admin's private chat. It shows live
+  session/turn/tool/text/model/mode/Turbo state, application state and queue.
+  Route admin queries and supported controls directly in the private chat.
+  Follow section 6 of the rebuild contract for quota reporting and controls.
 
 ## Architecture
 
-- Deliver the management bot first, including its own live acceptance phase. Add automated PR review only in the separate second milestone described in `docs/PR_REVIEW_PLAN.md`. Reading PR status/links for coordination is in scope for management; diff analysis, findings, review publication and review-specific schema/scheduling are deferred. Review must not block the first milestone or create a second agent/session.
+- Use Python, aiogram 3, SQLite with WAL and Alembic migrations.
+- Keep rules and models in `domain`, use cases and small I/O contracts in
+  `application`, integration details in `adapters`, lifecycle and scheduling in
+  `runtime`, and concrete dependency wiring in `bootstrap`.
+- Domain has no framework or I/O imports. Application does not import concrete
+  adapters. Map external models into typed boundary data; do not pass
+  `dict[str, Any]` between layers.
+- Group ownership by `conversations`, `memory`, `work` and `actions`. Add
+  `reviews` only in the second milestone. Cross-capability changes go through
+  public application contracts, never another capability's repository internals.
+- Route the bot's effectful tools through the owning action path. This path
+  does not wrap or replace Antigravity's native file/terminal/Git tools.
+- Keep SQL in storage adapters and ACP/HTTP details in their adapters. Use
+  small Protocols, functions, dataclasses, composition and manual injection.
+  Avoid generic base repositories, service locators and speculative scaffolding.
+- Use short use-case transactions and a lightweight Unit of Work for related
+  writes. Repositories do not commit independently. Never hold a transaction
+  while awaiting the agent, a network request or a human. Never share a database
+  session between concurrent tasks. Every schema change needs an Alembic migration.
+- Before a coding change, identify its owner, existing path, public contract,
+  failure cases and acceptance criterion. Deliver a small end-to-end behavior.
+  Add executable import-boundary checks when the source tree is created.
+- Record substantive decisions with reasons and keep the rebuild contract and
+  active delivery documentation consistent. Summaries never replace evidence
+  or versioned decision history.
 
-- Build in Python with aiogram 3. Keep a single modular application for the first version.
-- Keep product rules in `domain`, use cases and I/O contracts in `application`, external integrations in `adapters`, and lifecycle management in `runtime`. Add modules when a delivered feature needs them, not as empty scaffolding.
-- Domain code must not import aiogram, ORM models, API clients or subprocess code. Map external models into typed application data at boundaries.
-- Wire concrete dependencies in `bootstrap`. Use small Protocols at real I/O boundaries and manual dependency injection. Prefer functions, dataclasses and composition; justify additional layers and design patterns with a concrete problem.
-- Keep SQL in storage adapters and HTTP/ACP details in their own adapters. Avoid generic base repositories, service locators, speculative plugin systems and a single coordinator class that owns every responsibility.
-- Group each layer by capability (`conversations`, `memory`, `work`, `actions`; `reviews` only later). Reuse the owning module instead of adding a parallel path. Cross-capability changes go through public application contracts, never another capability's ORM/repository internals.
-- Route effectful management operations through the single action/policy/executor path. Repositories do not commit independently; use-case transaction boundaries and a lightweight Unit of Work make related local writes atomic. Network calls remain outside those transactions.
+## Delivery and verification
 
-## Operational invariants
-
-- One active Antigravity session and one active agent job per project. Concurrent input ingestion does not authorize concurrent agent turns. Enforce this in code, across process restarts as well as within asyncio.
-- Persist incoming updates before acknowledging them. Acknowledge only durable input; the default polling handler lifecycle alone is not a durability guarantee.
-- Queue state, batching deadlines, action attempts, approvals and outgoing notifications are durable. Never hold a database transaction while awaiting the model, network or a human response. Do not share an AsyncSession between concurrent tasks.
-- Revalidate actor permissions, target and draft/request revision immediately before an external action. Cancellation cannot undo an already submitted operation.
-- Reconcile unknown external outcomes before retrying. Retrying a Telegram notification must not repeat a GitHub mutation. Do not claim exactly-once external delivery.
-- Preserve message edits, speaker identity, reply/topic links, decision provenance and superseded decisions. Summaries do not replace source evidence.
-- When implementing the second milestone, bind reviews to base/head SHAs and recheck before publishing. Review snapshots must not switch the user's working branch.
-- Agent output and all external content are untrusted inputs to typed tools. Keep credentials and authority in the application executor. In the integrated service, Turbo defaults on for registered project operations. Track requested and effective state separately and grant project operations only for the active authorized turn.
-
-## Code quality and validation
-
-- Use type annotations for interfaces and application code; validate untrusted payloads at boundaries. Keep domain rules explicit, names descriptive and error handling specific.
-- Target Ruff lint/format and strict mypy. Suppressions must be narrow and explained. Document contracts, invariants and non-obvious decisions; avoid comments that repeat code.
-- Use the installed `python-design-patterns`, `python-code-style`, `async-python-patterns` and `python-testing-patterns` skills when their workflows apply. Read relevant references on demand; examples are guidance, not automatically correct project code.
-- Keep async I/O nonblocking, bound background work and retries, propagate cancellation after cleanup, and close subprocesses/connections on shutdown. A semaphore limits concurrency, not requests per time interval.
-- Test meaningful behavior: queue exclusivity, durable ACK, crash recovery, stale approvals, cancellation, unknown API outcomes, and stale reviews when implementing the second milestone. Prefer fakes at external boundaries and real temporary SQLite files for persistence tests. Keep routine tests offline.
-- After the development environment exists, run `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src/peyda_pm_bot` and relevant `uv run pytest` checks. Report actual check results; offline success is not live service validation.
-- Keep secrets, private chat exports, local databases, logs and authentication state out of commits and fixtures. Use sanitized examples and `.env.example` with placeholders when configuration is implemented.
-- Update the plan and relevant product documentation when implementation establishes a new decision. Keep changes scoped to the current deliverable.
-- Before a coding change, identify its owning module, existing implementation path, public contract, failure cases and acceptance criterion. Deliver a small end-to-end behavior with relevant checks. Add executable import-boundary checks when the source tree is created; do not weaken them merely to accommodate generated code. Record substantive architecture changes with rationale and update the canonical docs together.
-
-## Telegram features and verified aiogram APIs
-
-- Modern Telegram Bot API features may be used when they improve the current management-bot flow. Start with `docs/TELEGRAM_BOT_API_REFERENCE.md`; new features do not expand product scope or move PR review into the first milestone.
-- Before implementing or changing a Telegram feature, check the official Telegram changelog/method documentation and the matching aiogram documentation for the installed/locked version. Confirm the actual Python method, model fields, required permissions and supported chat type. Do not translate a camelCase API name into an assumed Python API or infer availability from another SDK.
-- The recorded baseline is aiogram 3.32.0 with Bot API 10.4 support, checked on 2026-11-17. It is a dated reference, not a perpetual claim about the latest release. Check PyPI for the current stable version when establishing/upgrading dependencies, then lock the chosen compatible version in `uv.lock`. Do not call it installed before installation or use moving `/latest/` documentation as proof about an older locked package.
-- For each adopted new feature, update the reference with the Telegram and aiogram links, checked versions/date, exact method/fields and restrictions. If sources conflict or cannot be retrieved, state what remains unverified; do not invent a signature or silently assume support. Inspect the installed package or the official versioned distribution when needed.
-- Distinguish Bot API from MTProto, guest/managed bots from this group's member bot, private-chat drafts/widgets from group-topic messages, and business checklists from ordinary bot messages. A Telegram tag, Premium status or a visual button state does not grant an application role or approve an action.
-- Keep optional UI enhancements behind a verified capability decision and a simple supported fallback. In the `pm` group topic, use persisted messages and bounded edits when private-chat-only streaming is unavailable; never report a temporary draft or ephemeral message as a durable team notification.
-- Test new payloads and policy behavior offline during development. The user has authorized early live checks; distinguish each verified adapter/tool from the remaining final integration acceptance.
-
-## Memory policy agreed with the user
-
-The managed team consists of three peers; do not invent a product-manager role. Asking about ambiguous decisions, confirming removal, notifying recorded changes and seeking at least two confirmations for sensitive decisions are agent prompt instructions. Do not add vote-counting, sensitivity classification or approval gates in code for these rules. Technical project/source/revision/turn validation remains mandatory. Memory tools only stage changes; the active worker atomically commits them with the successful job and notifications. Preserve history and evidence. Draft architecture text stays in the bot database; no writes to the managed repository are authorized by phase three.
-
-## GitHub policy agreed with the user
-
-Consensus and sensitive-operation confirmation remain agent prompt rules for GitHub too; do not add approval buttons, vote counting or a mandatory human-approval table. Prepare and submit are distinct tool operations; submission becomes runnable only after a successful turn. Validate repository binding, source freshness, draft revision and allowed operation types in code. Keep credentials in the main-process adapter, never in agent arguments/environment or MCP configuration. Unknown outcomes are reconciled, never blindly resent. Preserve external race and incomplete-pagination limitations in reports.
+- Follow the five phases in the rebuild contract: durable Telegram storage;
+  the real single-session loop and tools; subject memory; issues and
+  coordination; then PR review and daily-use preparation.
+- Phase two starts with live Antigravity probes for session lifecycle, eager
+  tools, Turbo and prompt capacity. Installation, connection checks and real
+  testing are authorized; do not defer every live check to the final phase.
+- Each delivery row in section 8 requires offline checks and live acceptance against its real
+  service. Record current results separately in `docs/LIVE_TESTING.md` when
+  checks begin. Historical evidence does not establish rebuild compatibility.
+- Verify official Telegram method/changelog documentation and the matching
+  installed/locked aiogram APIs before adopting a feature. Check current stable
+  dependencies when establishing the environment and lock chosen versions.
+  Dated API references do not prove what is currently installed or supported.
+- Keep routine tests offline, isolated from `.env` and process credentials.
+  Live checks must be explicit commands, never import or routine pytest effects.
+- Use real temporary SQLite files for persistence/recovery tests and fakes at
+  external boundaries. Test durable ACK, edits and duplicates, one active turn,
+  crash recovery, stale tool calls, cancellation, unknown outcomes and durable
+  retry scheduling. PR-version checks belong to the review milestone.
+- Once the development environment exists, run `uv run ruff check .`,
+  `uv run ruff format --check .`, `uv run mypy src/mimir_pm_bot` and relevant
+  `uv run pytest` checks. Report actual results; fake success is not live proof.
+- Use the installed `python-design-patterns`, `python-code-style`,
+  `async-python-patterns` and `python-testing-patterns` skills when applicable.
+  Keep interfaces typed, async I/O nonblocking, background work bounded and
+  shutdown explicit. Propagate cancellation after cleanup; do not swallow errors.
+- Keep operational numbers configurable. Keep credentials, private exports,
+  databases, logs and auth state in ignored local locations such as `.env`,
+  `.runtime/` and `.tools/`; never commit them or include them in fixtures.

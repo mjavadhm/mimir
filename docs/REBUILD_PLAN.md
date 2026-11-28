@@ -1,17 +1,24 @@
-# Rebuilding Peyda PM Bot from zero
+# Rebuilding Mimir PM Bot from zero
 
 This document is self-contained: it explains what the bot is, what it does,
 which decisions were made, and in what order to build it — everything needed
 to recreate the project from scratch. It contains no code and no tests, only
 product description and its contracts. It is taken from the owner's rebuild
-document (November 2026). For background on the previous implementation, see
+document, confirmed by the owner on 2026-11-22. This is the current product
+and architecture contract; [AGENTS.md](../AGENTS.md) applies it to development.
+For background on the previous implementation, see
 `docs/legacy/README.md` (product), `docs/legacy/ARCHITECTURE.md`
 (architecture) and `docs/legacy/IMPLEMENTATION_PLAN.md` (delivery plan); the
 problems this rebuild answers are listed in `docs/PROBLEMS.md`.
 
+Current state: the owner requested removal of the previous implementation on
+2026-11-22. Its source, tests, migrations, scripts, dependency manifests and
+CI configuration have been removed. Mimir phase one has passed offline and live acceptance;
+historical test results are not acceptance evidence for the rebuild.
+
 ## 1. What the bot is
 
-Peyda is a project-management assistant on Telegram for a three-person peer
+Mimir is a project-management assistant on Telegram for a three-person peer
 team. The bot is a member of the team's Telegram group (topic `pm`), reads
 what members write, joins discussions with knowledge of the code and the
 history of decisions, records decisions in a "subject file", turns a decision
@@ -29,20 +36,20 @@ and issues, and forgotten blockers and PRs waiting for review.
 - The bot's brain is a real coding agent, Google's Antigravity (the `agy`
   terminal command, run via `agy-cli`), connected through the ACP protocol —
   an agent with access to files, terminal and git, not a bare language model.
-- For the whole project there is exactly **one agent and one session** of
-  Antigravity; a separate session is never created per user/task/topic/PR.
+- Project management uses one persistent Antigravity conversation across users,
+  tasks and topics. For PR review, Mimir calls a tool that opens a separate
+  review session with a fixed reviewer prompt and PR-specific input.
 - Durable memory lives in a local SQLite database, independent of session
   lifetime.
 - Each subject has a "file" that the agent reads while thinking. The Telegram
   topic, the subject file and the agent session are three different concepts.
 - GitHub is the official source of truth for issues/PRs; the bot's database
   is a projection and a memory of discussions, reconciled with GitHub.
-- Running agent work is sequential: at any moment at most one turn and one
-  active session/prompt.
+- Management turns run sequentially. Each review job tracks its own session and progress.
 - Implementation is Python with aiogram 3; the database is SQLite with WAL;
   migrations use Alembic.
 - Delivery has two stages: first the PM bot alone; then the PR-review
-  capability on the same bot and the same session.
+  capability on the same bot via the [review tool](PR_REVIEW_PLAN.md).
 - The Telegram topic is the interface to the same persistent Antigravity
   conversation; the bot reopens the conversation by its fixed ID with
   `session/load`.
@@ -107,12 +114,25 @@ Rules for these tools:
   capacity; crossing the cap is never a raw truncate or split (an explicit
   recorded decision defines what happens).
 
-## 6. Status panel (`/screen`)
+## 6. Private admin chat
 
-Only in the bot's technical admin's private chat: a live view of the
-Antigravity session (current turn, tool steps, in-progress text, model, mode,
-turbo status), the application's state and the Telegram queue. The group
-never sees this panel.
+The technical admin manages Antigravity by messaging the bot directly. Route
+admin commands outside the project conversation queue, including while the agent
+is busy. Check both the private chat type and configured admin identity on
+every request. Send panel updates only to that private chat.
+
+`/screen` shows the active turn, latest tool steps, in-progress session text,
+queue, connection, effective model, mode and Turbo state. A limits query shows
+the provider-reported quota scope, amount used or remaining, reset time and
+observation time wherever available. Report an observed rate-limit event and its
+retry time separately. Distinguish Telegram delivery limits from Antigravity
+limits. Show unavailable fields explicitly. A token count or a rate-limit error
+alone cannot establish the percentage of account quota consumed.
+
+Candidate management commands are cancelling the current turn and selecting a
+model supported by the bound session. Verify each operation with the installed
+CLI before exposing it. Report the resulting turn state or effective model.
+Admin requests use the existing session.
 
 ## 7. Architecture (lightweight Ports & Adapters)
 
@@ -151,11 +171,38 @@ an Alembic migration.
   decision records.
 - **Phase 4 — issues and coordination:** issue creation with confirmation,
   start announcements, overlap checks, PR follow-up.
-- **Phase 5 — PR review and preparation for daily use.**
+- **Phase 5 — requested PR reviews.** Management loads `prompts/mimir.md`.
+  A Telegram request calls `review_pr` and starts a separate session with
+  `prompts/reviewer.md`, the current PR snapshot and role-specific MCP servers
+  from `config/mcp.toml`. Results go to the topic. Explicit requests can
+  publish a saved result as a GitHub comment. See the [phase-five plan](PR_REVIEW_PLAN.md).
 
-Every phase has two deliverables: offline (the tests) and live against the
-real service; live acceptance criteria are recorded in the implementation
-plan.
+Each row below is a separately tested delivery. Run relevant offline checks
+and at least one real acceptance scenario per row before counting it as
+delivered. Record the date, versions, expected and observed result and any
+unavailable capability in [the live test log](LIVE_TESTING.md). Use its browser
+procedure for group and admin tests. Run rows in the listed order. Phase one has passed. Phase two has integrated live evidence for 2a–2h; 2c still requires a distinct non-admin account for its live negative test. Phase three passed offline and live acceptance for 3a and 3b, including recall after a service restart. Phase four is implemented. Drafting, issue creation, overlap follow-up and restart delivery passed live on tele-agy. Its live PR-link test awaits the first real PR in that repository. Phase five implements Telegram-requested delegated review, version checks, durable recovery and optional publication as a PR conversation comment. See LIVE_TESTING.md for exercised paths.
+
+| Delivery | Live acceptance scenario |
+|---|---|
+| 1a. Receive and store | Send a message in the real topic and verify its speaker, topic and committed checkpoint in SQLite. |
+| 1b. Edit and recover | Edit the message, restart the collector and replay the captured update. Verify both versions survive and neither is duplicated. |
+| 2a. Probe Antigravity | Load the configured conversation, run a real prompt and tool, inspect model, mode, Turbo, quota and available controls. Measure prompt capacity and record the backlog decision. |
+| 2b. Batch turns | Send several lines in the topic, then another during an active turn. Verify speaker/version references and two sequential prompts in the same session. |
+| 2c. Observe from private chat | During a real turn, open the panel and query limits from the admin DM. Compare with CLI observations. Check that a group request and a non-admin DM disclose no panel data. |
+| 2d. Control from private chat | Exercise each supported control from the admin DM. Check cancellation against the actual turn and model selection against the next turn in the same conversation. Record unsupported controls. |
+| 2e. Send and reply | Trigger a standalone message and a reply through the real agent. Check both in Telegram Web, including the reply target. |
+| 2f. React or stay silent | Ask for a reaction, change it and remove it. Verify order and target in the topic. Run a silent turn and verify successful completion without a new post. |
+| 2g. Send a document | Send a synthetic text file through the agent tool and open the received document in Telegram Web to compare its content. |
+| 2h. Recover an outgoing attempt | Restart after a real send and replay the same tool call. Verify one delivered message. Exercise unknown outcomes and RetryAfter deterministically offline. |
+| 3a. Record memory | Make a test decision in the topic and inspect the subject record and source messages. |
+| 3b. Revise and recall | Supersede that decision, restart, then ask what changed and why. Verify current and historical evidence. |
+| 4a. Create an issue | From an agreed test decision in Telegram create an issue in the designated GitHub repository and verify its link and contents. |
+| 4b. Coordinate work | Announce overlapping work and link a test PR. Ask in the topic who is working on it and compare the answer with team evidence and GitHub. |
+| 4c. Accept the management bot | Run the discussion-to-issue-to-follow-up flow, restart during pending work and verify recovery and notifications before starting PR review. |
+| 5a. Configure prompts and MCP | Verify both role profiles offline, then change the management prompt in a test setup, restart between turns and observe the change in a real Telegram reply. |
+| 5b. Review a PR | Have Mimir delegate a test PR to a distinct review session, change its head during review and verify published findings refer to the current revision. |
+| 5c. Exercise daily operation | Interleave a team discussion with review work and restart the service. Verify both resume sequentially and no completed external action is repeated. |
 
 ## 9. Process principles
 
@@ -169,3 +216,8 @@ plan.
 - On failures: an unknown outcome is investigated before retrying; a failed
   send is separated into firm refusal / retryable / unknown; `except: pass`
   is never acceptable.
+
+The private admin panel can bind the existing project conversation to a forum group and topic.
+Authorized numeric user IDs come from MIMIR_ADMIN_IDS. The initial environment destination
+is optional for --serve. An accepted topic probe saves the destination in SQLite. Each
+pile and its deliveries retain their originating route when an admin changes the destination.

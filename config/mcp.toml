@@ -1,0 +1,9 @@
+[mimir]
+servers = ["mimir"]
+
+[reviewer]
+servers = []
+
+# Additional HTTP servers can be referenced by name in either list.
+# [http.docs]
+# url = "http://127.0.0.1:8080/mcp"

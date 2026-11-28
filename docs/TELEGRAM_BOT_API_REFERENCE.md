@@ -108,3 +108,33 @@
 تلگرام فعلاً برای بات یک ری‌اکشن در هر پیام را اعلام می‌کند؛ paid مجاز نیست. بعضی service messageها ری‌اکشن نمی‌پذیرند؛ در media group ممکن است هدف واقعی اولین پیام حذف‌نشده گروه رسانه باشد. محدودیت ایموجی‌های فعال گروه همچنان اعمال می‌شود. ابزار فعلی custom emoji را ارائه نمی‌دهد. هیچ نقش یا دسترسی مدیریتی جدیدی با این قابلیت کسب نمی‌شود؛ بررسی live مجوزها و پشتیبانی گروه در فاز شش باقی می‌ماند.
 
 خطای BadRequest مربوط به ری‌اکشن permanent، خطای شبکه/سرور unknown، و RetryAfter موقت با رعایت انتظار است. موفقیت ساختگی یا جایگزینی خودکار ری‌اکشن نامعتبر با پیام متنی وجود ندارد. تمام تست‌های این قابلیت آفلاین‌اند.
+
+## فاز اول میمیر، ۲۰۲۶-۱۱-۲۲
+
+مسیر دریافت با aiogram قفل‌شدهٔ 3.32.0 و Bot API آزموده شد. امضای نصب‌شدهٔ `Bot.get_updates` شامل `offset`، `limit`، `timeout`، `allowed_updates` و `request_timeout` است. گیرنده `message` و `edited_message` را در گروه و تاپیک تنظیم‌شده می‌پذیرد و offset متعهدشده را در poll بعدی می‌فرستد. تاریخ ارسال از `date` و زمان ویرایش از `edit_date` خوانده می‌شوند. [روش رسمی تلگرام](https://core.telegram.org/bots/api#getupdates)، [تغییرات رسمی](https://core.telegram.org/bots/api-changelog)، [مرجع نسخهٔ aiogram](https://docs.aiogram.dev/en/v3.32.0/api/methods/get_updates.html)، [شواهد اجرای واقعی](LIVE_TESTING.md).
+
+## Mimir phase two, checked 2026-11-22
+
+The installed aiogram 3.32.0 exposes `Bot.send_message` with `message_thread_id` and `reply_parameters`, `Bot.send_document` with `FSInputFile` and `message_thread_id`, and `Bot.set_message_reaction` with `message_id` and an emoji reaction list. Pass an empty list to remove the reaction. Private panel refresh uses `Bot.edit_message_text` on the bot's own private message. Topic sends target the bound forum group and replies refer to a stored message version. Limits and unsupported reactions are reported from the service. See [Telegram methods](https://core.telegram.org/bots/api), [Telegram changelog](https://core.telegram.org/bots/api-changelog), [versioned aiogram methods](https://docs.aiogram.dev/en/v3.32.0/api/methods/index.html) and the [live observations](LIVE_TESTING.md).
+
+در میمیر بازسازی‌شده، ارسال و ریپلای متنی تاپیک از Markdown در
+`InputRichMessage` استفاده می‌کند. پنل خصوصی و ویرایش همان کارت از بلوک
+پاراگراف برای حفظ متن دقیق CLI استفاده می‌کنند. رد قطعیِ پارس Markdown
+با بلوک متنی rich همان مقصد قابل بازیابی است. در ۲۰۲۶-۱۱-۲۲ با aiogram
+3.32.0، تلگرام پیام آماده‌بودن مشتری‌یاب را در تاپیک صحیح با دو بلوک rich برگرداند.
+
+در ۲۰۲۶-۱۱-۲۲ کارت وضعیت عمومیِ هر نوبت مشتری‌یاب روی aiogram 3.32.0
+با `send_rich_message(message_thread_id=...)` و ویرایش همان پیام با
+`edit_message_text(chat_id=..., message_id=..., rich_message=...)` فعال شد.
+کارت تعداد پیام‌ها، فعالیت ابزار و پایان نوبت را نشان می‌دهد؛ متن تدریجی
+مدل فقط در پنل خصوصی قابل مشاهده است. در Telegram Web برای نوبت سوم، ویرایش
+کارت به «فعالیت ۲: جست‌وجو در حافظه» مشاهده شد.
+
+کارت وضعیت مشتری‌یاب اکنون عنوان انگلیسی برجسته و یک سطر فعالیت دارد.
+پس از پایان یا توقف پردازش، سرویس با `delete_message(chat_id, message_id)`
+شناسهٔ ذخیره‌شدهٔ همان کارت را حذف می‌کند. محدودیت معمول حذف پیام ۴۸ ساعت است.
+[Telegram deleteMessage](https://core.telegram.org/bots/api#deletemessage)
+
+### Destination setup (2026-11-28)
+
+With aiogram 3.32.0 the private setup flow uses Bot.get_chat to check a supergroup's is_forum flag, then Bot.send_rich_message with message_thread_id to check permission to post in the chosen topic. The receipt's chat.id and message_thread_id must match before activation. For General the request omits the thread ID and treats an absent receipt thread as 1. The live test exercised a numbered forum topic. Bot.send_chat_action returned true for a missing thread. See [Telegram getChat](https://core.telegram.org/bots/api#getchat), [sendRichMessage](https://core.telegram.org/bots/api#sendrichmessage) and [API changelog](https://core.telegram.org/bots/api-changelog).
